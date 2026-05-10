@@ -1,0 +1,15 @@
+[Unit]
+Description=DeepSeek TUI Runtime API Server
+Documentation=https://github.com/Hmbown/DeepSeek-TUI/blob/main/docs/RUNTIME_API.md
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=%h/.cargo/bin/deepseek-tui serve --http --host 127.0.0.1 --port 7878 --workers 2 --auth-token deepseek-local-7878
+Restart=on-failure
+RestartSec=5
+Environment=PATH=%h/.cargo/bin:/usr/bin:/bin
+Environment=RUST_LOG=warn
+
+[Install]
+WantedBy=default.target

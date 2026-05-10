@@ -1,0 +1,8 @@
+# DeepSeek TUI Configuration Template
+# Copy to ~/.deepseek/config.toml and fill in your API key
+
+api_key = "sk-your-deepseek-api-key-here"
+model = "deepseek-v4-pro"
+max_reasoning = true
+lsp = true
+snapshots = true

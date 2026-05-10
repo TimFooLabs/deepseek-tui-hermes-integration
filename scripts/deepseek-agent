@@ -1,0 +1,165 @@
+#!/usr/bin/env bash
+# deepseek-agent — Hermes-facing wrapper for DeepSeek TUI runtime API
+#
+# Usage:
+#   deepseek-agent "Your task prompt" [--workspace /path] [--model model] [--max-turns N] [--mode agent|plan|yolo] [--timeout 300] [--verbose] [--yolo]
+#
+# Output: The agent's final response text on stdout.
+# Exit codes: 0 = success, 1 = API/LLM error, 2 = timeout, 3 = server not reachable
+
+set -uo pipefail
+
+# ── Defaults ──────────────────────────────────────────────────────────────────
+SERVER="http://127.0.0.1:7878"
+TOKEN="${DEEPSEEK_RUNTIME_TOKEN:-deepseek-local-7878}"
+MODEL="deepseek-v4-pro"
+MODE="agent"
+MAX_TURNS=20
+TIMEOUT=600
+VERBOSE=0
+WORKSPACE=""
+PROMPT=""
+AUTO_APPROVE=false
+
+# ── Parse args ────────────────────────────────────────────────────────────────
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --workspace)  WORKSPACE="$2";  shift 2 ;;
+    --model)      MODEL="$2";      shift 2 ;;
+    --mode)       MODE="$2";       shift 2 ;;
+    --max-turns)  MAX_TURNS="$2";  shift 2 ;;
+    --timeout)    TIMEOUT="$2";    shift 2 ;;
+    --yolo)       AUTO_APPROVE=true; shift ;;
+    --verbose)    VERBOSE=1;       shift ;;
+    -h|--help)
+      sed -n '2,12p' "$0" | sed 's/^# \?//'
+      exit 0
+      ;;
+    *)
+      if [[ -z "$PROMPT" ]]; then
+        PROMPT="$1"
+      else
+        PROMPT="$PROMPT $1"
+      fi
+      shift ;;
+  esac
+done
+
+[[ -z "$PROMPT" ]] && { echo "ERROR: No prompt provided" >&2; exit 1; }
+WORKSPACE="$(realpath "${WORKSPACE:-.}")"
+
+log() { [[ "$VERBOSE" == 1 ]] && printf "[deepseek-agent] %s\n" "$*" >&2 || true; }
+
+# ── Server health check ───────────────────────────────────────────────────────
+if ! curl -sf "$SERVER/health" > /dev/null 2>&1; then
+  echo "ERROR: DeepSeek TUI runtime API not reachable at $SERVER" >&2
+  echo "Start it with: systemctl --user start deepseek-tui" >&2
+  exit 3
+fi
+
+AUTH_H=(-H "Authorization: Bearer $TOKEN")
+JSON_H=(-H "Content-Type: application/json")
+
+# ── Helper: POST JSON ─────────────────────────────────────────────────────────
+post_json() {
+  curl -sf "${AUTH_H[@]}" "${JSON_H[@]}" -X POST "$1" -d "$2"
+}
+
+# ── Helper: GET JSON ──────────────────────────────────────────────────────────
+get_json() {
+  curl -sf "${AUTH_H[@]}" "$1"
+}
+
+# ── Step 1: Create a thread ───────────────────────────────────────────────────
+log "Creating thread (model=$MODEL, mode=$MODE, workspace=$WORKSPACE, auto_approve=$AUTO_APPROVE)"
+
+THREAD_JSON=$(post_json "$SERVER/v1/threads" \
+  "$(jq -n --arg m "$MODEL" --arg w "$WORKSPACE" --arg mode "$MODE" --argjson aa "$AUTO_APPROVE" \
+    '{model: $m, workspace: $w, mode: $mode, auto_approve: $aa}')")
+
+THREAD_ID=$(echo "$THREAD_JSON" | jq -r '.id // empty')
+[[ -z "$THREAD_ID" ]] && { echo "ERROR: Failed to create thread: $THREAD_JSON" >&2; exit 1; }
+log "Thread: $THREAD_ID"
+
+# ── Step 2: Send the prompt as a turn ────────────────────────────────────────
+log "Sending prompt (max_turns=$MAX_TURNS)"
+
+TURN_RESPONSE=$(post_json "$SERVER/v1/threads/$THREAD_ID/turns" \
+  "$(jq -n --arg p "$PROMPT" --argjson mt "$MAX_TURNS" \
+    '{prompt: $p, max_turns: $mt}')")
+
+TURN_ID=$(echo "$TURN_RESPONSE" | jq -r '.turn.id // empty')
+[[ -z "$TURN_ID" ]] && {
+  curl -sf "${AUTH_H[@]}" -X DELETE "$SERVER/v1/threads/$THREAD_ID" > /dev/null 2>&1 || true
+  echo "ERROR: Failed to create turn: $TURN_RESPONSE" >&2
+  exit 1
+}
+log "Turn: $TURN_ID"
+
+# ── Step 3: Poll thread until turn completes ──────────────────────────────────
+log "Polling for completion (timeout=${TIMEOUT}s)"
+
+ELAPSED=0
+POLL_INTERVAL=5
+FINAL_STATUS="in_progress"
+FINAL_TEXT=""
+USAGE_INPUT=0
+USAGE_OUTPUT=0
+USAGE_COST=0
+
+while [[ "$FINAL_STATUS" == "in_progress" || "$FINAL_STATUS" == "queued" ]]; do
+  if [[ "$ELAPSED" -ge "$TIMEOUT" ]]; then
+    log "Timeout — interrupting turn"
+    curl -sf "${AUTH_H[@]}" -X POST "$SERVER/v1/threads/$THREAD_ID/turns/$TURN_ID/interrupt" > /dev/null 2>&1 || true
+    FINAL_STATUS="interrupted"
+    break
+  fi
+
+  sleep "$POLL_INTERVAL"
+  ELAPSED=$((ELAPSED + POLL_INTERVAL))
+
+  # Fetch thread state (includes turns and items)
+  THREAD_STATE=$(get_json "$SERVER/v1/threads/$THREAD_ID" 2>/dev/null || echo "{}")
+
+  # Check turn status
+  FINAL_STATUS=$(echo "$THREAD_STATE" | jq -r '.turns[0].status // "unknown"')
+  USAGE_INPUT=$(echo "$THREAD_STATE" | jq -r '.turns[0].usage.input_tokens // 0')
+  USAGE_OUTPUT=$(echo "$THREAD_STATE" | jq -r '.turns[0].usage.output_tokens // 0')
+
+  log "Status: $FINAL_STATUS (elapsed: ${ELAPSED}s)"
+
+  if [[ "$FINAL_STATUS" == "completed" || "$FINAL_STATUS" == "failed" || "$FINAL_STATUS" == "interrupted" ]]; then
+    # Extract agent message from items
+    FINAL_TEXT=$(echo "$THREAD_STATE" | jq -r '
+      .items[] 
+      | select(.kind == "agent_message" and .status == "completed") 
+      | .detail // empty
+    ' 2>/dev/null | head -1)
+
+    # If no agent_message with detail, try reasoning
+    if [[ -z "$FINAL_TEXT" ]]; then
+      FINAL_TEXT=$(echo "$THREAD_STATE" | jq -r '
+        .items[] 
+        | select(.kind == "agent_reasoning" and .status == "completed") 
+        | .summary // empty
+      ' 2>/dev/null | tail -1)
+    fi
+
+    USAGE_COST=$(echo "$THREAD_STATE" | jq -r '.turns[0].usage.cost_usd // 0')
+    break
+  fi
+done
+
+# ── Output ────────────────────────────────────────────────────────────────────
+log "Status: $FINAL_STATUS | Tokens: ${USAGE_INPUT}in/${USAGE_OUTPUT}out"
+
+[[ "$VERBOSE" == 1 ]] && printf "\n[deepseek-agent] Thread: %s | Status: %s\n" "$THREAD_ID" "$FINAL_STATUS" >&2
+
+echo "$FINAL_TEXT"
+
+case "$FINAL_STATUS" in
+  completed)   exit 0 ;;
+  failed)      exit 1 ;;
+  interrupted) exit 2 ;;
+  *)           exit 1 ;;
+esac
