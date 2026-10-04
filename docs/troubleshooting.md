@@ -67,9 +67,33 @@ ln -s /lib/x86_64-linux-gnu/libdbus-1.so.3 ~/.local/lib/libdbus-1.so
 - Verify API key: `deepseek doctor`
 - Check the thread directly:
   ```bash
-  curl -s -H "Authorization: Bearer deepseek-local-7878" \
+  curl -s -H "Authorization: Bearer $DEEPSEEK_RUNTIME_TOKEN" \
     http://127.0.0.1:7878/v1/threads/THREAD_ID | jq '.items'
   ```
+
+### Runtime API returns 401/403 after a reboot
+
+The server found no `DEEPSEEK_RUNTIME_TOKEN` at startup and generated an
+ephemeral token for that process — it refuses to serve `/v1/*` unauthenticated,
+so every client gets 401/403.
+
+```bash
+# Does the env file exist, and is it non-empty?
+ls -l ~/.config/deepseek-tui/runtime.env
+grep -c '^DEEPSEEK_RUNTIME_TOKEN=' ~/.config/deepseek-tui/runtime.env
+
+# Check what the server resolved at startup
+journalctl --user -u deepseek-tui -n 20 | grep -i "auth"
+```
+
+Fix: regenerate the env file per [Setup, Step 3](setup.md#3a-generate-a-runtime-token),
+then `systemctl --user restart deepseek-tui`.
+
+### Wrapper exits immediately: `DEEPSEEK_RUNTIME_TOKEN is not set`
+
+The wrapper no longer ships a default token — this is the fail-fast guard.
+Export it in the shell that launches Hermes (see
+[Setup, Step 4](setup.md#step-4-install-the-hermes-wrapper)).
 
 ### `curl: (56) Recv failure: Connection reset by peer`
 

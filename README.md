@@ -43,6 +43,7 @@ systemctl --user enable --now deepseek-tui
 curl http://127.0.0.1:7878/health
 
 # 3. Delegate a task from Hermes
+#    (the wrapper requires DEEPSEEK_RUNTIME_TOKEN in its environment — see docs/setup.md)
 deepseek-agent "Add input validation to the /api/login endpoint" \
   --workspace /path/to/project \
   --model deepseek-v4-pro \
