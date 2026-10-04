@@ -10,9 +10,19 @@ http://127.0.0.1:7878
 
 ## Authentication
 
+All `/v1/*` routes require a bearer token:
+
 ```
-Authorization: Bearer deepseek-local-7878
+Authorization: Bearer $DEEPSEEK_RUNTIME_TOKEN
 ```
+
+The token is generated locally (`openssl rand -hex 32`), stored in the service
+env file (`~/.config/deepseek-tui/runtime.env`, mode `600`), and read by the
+server when `--auth-token` is omitted. It is never hardcoded or committed. See
+[Setup, Step 3](setup.md#3a-generate-a-runtime-token).
+
+`GET /health` is unauthenticated. If no token is configured, the server
+generates an ephemeral one for that process rather than serving `/v1/*` open.
 
 ## Endpoints
 

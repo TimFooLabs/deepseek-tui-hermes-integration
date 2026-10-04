@@ -5,7 +5,11 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=%h/.cargo/bin/deepseek-tui serve --http --host 127.0.0.1 --port 7878 --workers 2 --auth-token deepseek-local-7878
+# The bearer token comes from the env file below (DEEPSEEK_RUNTIME_TOKEN) —
+# never from the command line, where `ps` would expose it.
+# Create it first: see docs/setup.md, Step 3.
+EnvironmentFile=%h/.config/deepseek-tui/runtime.env
+ExecStart=%h/.cargo/bin/deepseek-tui serve --http --host 127.0.0.1 --port 7878 --workers 2
 Restart=on-failure
 RestartSec=5
 Environment=PATH=%h/.cargo/bin:/usr/bin:/bin

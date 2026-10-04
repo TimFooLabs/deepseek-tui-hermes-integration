@@ -23,7 +23,8 @@ Run the runtime API as a systemd user service with linger enabled.
 ```ini
 [Service]
 Type=simple
-ExecStart=%h/.cargo/bin/deepseek-tui serve --http --host 127.0.0.1 --port 7878 --workers 2 --auth-token deepseek-local-7878
+EnvironmentFile=%h/.config/deepseek-tui/runtime.env
+ExecStart=%h/.cargo/bin/deepseek-tui serve --http --host 127.0.0.1 --port 7878 --workers 2
 Restart=on-failure
 RestartSec=5
 Environment=PATH=%h/.cargo/bin:/usr/bin:/bin
@@ -33,12 +34,22 @@ Environment=RUST_LOG=warn
 - **Workers: 2** — allows concurrent turn processing
 - **RUST_LOG=warn** — reduces noise; errors still logged
 - **Bind: 127.0.0.1** — localhost only, no external exposure
+- **Token via `EnvironmentFile`** — `DEEPSEEK_RUNTIME_TOKEN` is read from a
+  user-owned, mode-`600` env file instead of an `--auth-token` argument
 
 ## Consequences
 
 - Requires systemd (standard on Ubuntu 24.04, available in WSL2 with Ubuntu)
 - Requires linger to be enabled (one-time setup)
 - Service survives WSL restarts
+- The bearer token is never on the command line. Command lines are world-readable
+  via `ps` and `/proc/<pid>/cmdline`; an env file is not. The server reads
+  `DEEPSEEK_RUNTIME_TOKEN` when `--auth-token` is omitted (verified against
+  upstream v0.8.26) and, if the variable is unset, generates an ephemeral token
+  instead of serving `/v1/*` unauthenticated — so a missing env file fails
+  closed, not open.
+- The env file must exist before the unit starts; see
+  [Setup, Step 3](../setup.md#3a-generate-a-runtime-token).
 
 ## Alternatives Considered
 

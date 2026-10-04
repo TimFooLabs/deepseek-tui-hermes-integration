@@ -5,13 +5,14 @@
 #   deepseek-agent "Your task prompt" [--workspace /path] [--model model] [--max-turns N] [--mode agent|plan|yolo] [--timeout 300] [--verbose] [--yolo]
 #
 # Output: The agent's final response text on stdout.
-# Exit codes: 0 = success, 1 = API/LLM error, 2 = timeout, 3 = server not reachable
+# Auth:   requires DEEPSEEK_RUNTIME_TOKEN (see docs/setup.md)
+# Exit codes: 0 = success, 1 = API/config error, 2 = timeout, 3 = server not reachable
 
 set -uo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
 SERVER="http://127.0.0.1:7878"
-TOKEN="${DEEPSEEK_RUNTIME_TOKEN:-deepseek-local-7878}"
+TOKEN="${DEEPSEEK_RUNTIME_TOKEN:-}"
 MODEL="deepseek-v4-pro"
 MODE="agent"
 MAX_TURNS=20
@@ -32,7 +33,7 @@ while [[ $# -gt 0 ]]; do
     --yolo)       AUTO_APPROVE=true; shift ;;
     --verbose)    VERBOSE=1;       shift ;;
     -h|--help)
-      sed -n '2,12p' "$0" | sed 's/^# \?//'
+      sed -n '2,9p' "$0" | sed 's/^# \?//'
       exit 0
       ;;
     *)
@@ -46,6 +47,15 @@ while [[ $# -gt 0 ]]; do
 done
 
 [[ -z "$PROMPT" ]] && { echo "ERROR: No prompt provided" >&2; exit 1; }
+
+# Fail fast on a missing credential — never fall back to a hardcoded token.
+if [[ -z "${TOKEN// }" ]]; then
+  echo "ERROR: DEEPSEEK_RUNTIME_TOKEN is not set (or blank)." >&2
+  echo "Generate one with: openssl rand -hex 32" >&2
+  echo "Then put it in the service env file and export it for this shell — see docs/setup.md." >&2
+  exit 1
+fi
+
 WORKSPACE="$(realpath "${WORKSPACE:-.}")"
 
 log() { [[ "$VERBOSE" == 1 ]] && printf "[deepseek-agent] %s\n" "$*" >&2 || true; }
